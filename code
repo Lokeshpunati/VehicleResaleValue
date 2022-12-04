@@ -1,0 +1,397 @@
+# Importing Packages
+
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn import datasets, linear_model, preprocessing, svm
+from sklearn.preprocessing import StandardScaler, Normalizer
+import math
+import matplotlib
+import seaborn as sns
+
+%matplotlib inline
+
+### Useful functions
+
+def category_values(dataframe, categories):
+    for c in categories:
+        print('\n', dataframe.groupby(by=c)[c].count().sort_values(ascending=False))
+        print('Nulls: ', dataframe[c].isnull().sum())
+
+def plot_correlation_map( df ):
+    corr = df.corr()
+    _ , ax = plt.subplots( figsize =( 12 , 10 ) )
+    cmap = sns.diverging_palette( 220 , 10 , as_cmap = True )
+    _ = sns.heatmap(
+        corr, 
+        cmap = cmap,
+        square=True, 
+        cbar_kws={ 'shrink' : .9 }, 
+        ax=ax, 
+        annot = True, 
+        annot_kws = { 'fontsize' : 12 }
+    )
+
+
+
+# Preparing data
+
+## Reading from file
+
+df = pd.read_csv('autos.csv', sep=',', header=0, encoding='cp1252')
+#df = pd.read_csv('autos.csv.gz', sep=',', header=0, compression='gzip',encoding='cp1252')
+df.sample(10)
+
+df.describe()
+
+# Dropping some useless columns
+
+
+print(df.seller.unique())
+print(df.offerType.unique())
+print(df.abtest.unique())
+print(df.nrOfPictures.unique())
+
+df.drop(['seller', 'offerType', 'abtest', 'dateCrawled', 'nrOfPictures', 'lastSeen', 'postalCode', 'dateCreated'], axis='columns', inplace=True)
+
+
+## Cleaning data
+
+Cleaning data from duplicates, NaNs and selecting reasonable ranges for columns
+
+
+print("Too new: %d" % df.loc[df.yearOfRegistration >= 2017].count()['name'])
+print("Too old: %d" % df.loc[df.yearOfRegistration < 1950].count()['name'])
+print("Too cheap: %d" % df.loc[df.price<100].count()['name'])
+print("Too expensive: " , df.loc[df.price > 150000].count()['name'])
+print("Too few km: " , df.loc[df.kilometer < 5000].count()['name'])
+print("Too many km: " , df.loc[df.kilometer > 200000].count()['name'])
+print("Too few PS: " , df.loc[df.powerPS < 10].count()['name'])
+print("Too many PS: " , df.loc[df.powerPS > 500].count()['name'])
+print("Fuel types: " , df['fuelType'].unique())
+#print("Offer types: " , df['offerType'].unique())
+#print("Sellers: " , df['seller'].unique())
+print("Damages: " , df['notRepairedDamage'].unique())
+#print("Pics: " , df['nrOfPictures'].unique()) # nrOfPictures : number of pictures in the ad (unfortunately this field contains everywhere a 0 and is thus useless (bug in crawler!) )
+#print("Postale codes: " , df['postalCode'].unique())
+print("Vehicle types: " , df['vehicleType'].unique())
+print("Brands: " , df['brand'].unique())
+
+# Cleaning data
+#valid_models = df.dropna()
+
+#### Removing the duplicates
+dedups = df.drop_duplicates(['name','price','vehicleType','yearOfRegistration'
+                         ,'gearbox','powerPS','model','kilometer','monthOfRegistration','fuelType'
+                         ,'notRepairedDamage'])
+
+#### Removing the outliers
+dedups = dedups[
+        (dedups.yearOfRegistration <= 2016) 
+      & (dedups.yearOfRegistration >= 1950) 
+      & (dedups.price >= 100) 
+      & (dedups.price <= 150000) 
+      & (dedups.powerPS >= 10) 
+      & (dedups.powerPS <= 500)]
+
+print("-----------------\nData kept for analisys: %d percent of the entire set\n-----------------" % (100 * dedups['name'].count() / df['name'].count()))
+
+
+## Working on the `null` values
+
+Checking if theree are NaNs to fix or drop
+
+dedups.isnull().sum()
+
+dedups['notRepairedDamage'].fillna(value='not-declared', inplace=True)
+dedups['fuelType'].fillna(value='not-declared', inplace=True)
+dedups['gearbox'].fillna(value='not-declared', inplace=True)
+dedups['vehicleType'].fillna(value='not-declared', inplace=True)
+dedups['model'].fillna(value='not-declared', inplace=True)
+
+Checking if all the nulls have been filled or dropped.
+
+dedups.isnull().sum()
+
+OK, we're clear. Let's do some visualization now.
+
+## Visualizations
+### Categories distribution
+Let's see some charts to understand how data is distributed across the categories
+
+categories = ['gearbox', 'model', 'brand', 'vehicleType', 'fuelType', 'notRepairedDamage']
+
+for i, c in enumerate(categories):
+    v = dedups[c].unique()
+    
+    g = dedups.groupby(by=c)[c].count().sort_values(ascending=False)
+    r = range(min(len(v), 5))
+
+    print( g.head())
+    plt.figure(figsize=(5,3))
+    plt.bar(r, g.head()) 
+    #plt.xticks(r, v)
+    #plt.xticks(r, g.index)
+    plt.show()
+
+### Feature engineering
+
+Adding the name length to see how much does a long description influence the price
+
+dedups['namelen'] = [min(70, len(n)) for n in dedups['name']]
+
+ax = sns.jointplot(x='namelen', 
+                   y='price',
+                   data=dedups[['namelen','price']], 
+#                   data=dedups[['namelen','price']][dedups['model']=='golf'], 
+                    alpha=0.1, 
+                    size=8)
+
+
+
+
+labels = ['name', 'gearbox', 'notRepairedDamage', 'model', 'brand', 'fuelType', 'vehicleType']
+les = {}
+
+for l in labels:
+    les[l] = preprocessing.LabelEncoder()
+    les[l].fit(dedups[l])
+    tr = les[l].transform(dedups[l]) 
+    dedups.loc[:, l + '_feat'] = pd.Series(tr, index=dedups.index)
+
+labeled = dedups[ ['price'
+                        ,'yearOfRegistration'
+                        ,'powerPS'
+                        ,'kilometer'
+                        ,'monthOfRegistration'
+                        , 'namelen'] 
+                    + [x+"_feat" for x in labels]]
+
+
+len(labeled['name_feat'].unique()) / len(labeled['name_feat'])
+
+Labels for the name column account for 62% of the total. I think it's too much, so I remove the feature.
+
+labeled.drop(['name_feat'], axis='columns', inplace=True)
+
+### Correlations
+
+plot_correlation_map(labeled)
+labeled.corr()
+
+labeled.corr().loc[:,'price'].abs().sort_values(ascending=False)[1:]
+
+
+df1=df.copy(deep=True)
+df1=df1.drop(df1[df1.powerPS<1].index)
+df1=df1.drop(df1[df1.powerPS<10].index)
+df1=df1.drop(df1[(df1.powerPS<30)&(df1.yearOfRegistration>1980)&(df1.brand!="TRABANT")].index)
+df1=df1.drop(df1[df1.fuelType=='andere'].index)
+df1.monthOfRegistration.max()
+df1=df1.drop(df1[df1.price<200].index)
+
+df1[df1.price==500].sort_values(by="yearOfRegistration", ascending=False)
+#df1=df1.drop(df1[df1.price<200].index)
+
+df1=df1.drop(df1[(df1.price<1000)&(df1.yearOfRegistration>2008)].index)
+df1=df1.drop(df1[(df1.price<1000)&(df1.yearOfRegistration>2005)].index)
+df=df.drop(df.loc[df.price>=1.9*1e6].index)
+
+df1.rename(columns={"notRepairedDamage":"salvaged"}, inplace=True)
+
+plt.subplots(figsize=(5, 5))
+g=sns.lineplot(x=df1[df1.kilometer>=10000].kilometer ,y=df1.price[df1.kilometer>=10000],  alpha=0.5)
+g.set_xticklabels(g.get_xticklabels(), rotation=90)
+g.grid(axis='both')
+a,b=np.polyfit(df1[df1.price<=0.01e7].kilometer, df1[df1.price<=0.01e7].price, 1)
+xx=np.array([10000 , 150000])
+y=a*xx+b
+h=sns.lineplot(xx, y, color='red')
+#g.margins(tight=True)
+#h.margins(tight=True)
+
+# Playing with different models
+
+
+Y = labeled['price']
+X = labeled.drop(['price'], axis='columns', inplace=False)
+
+
+matplotlib.rcParams['figure.figsize'] = (12.0, 6.0)
+prices = pd.DataFrame({"1. Before":Y, "2. After":np.log1p(Y)})
+prices.hist()
+
+Y = np.log1p(Y)
+
+### Basic imports and functions
+
+from sklearn.linear_model import Ridge, RidgeCV, ElasticNet, Lasso, LassoCV, LassoLarsCV
+from sklearn.model_selection import cross_val_score, train_test_split
+
+
+# Percent of the X array to use as training set. This implies that the rest will be test set
+
+#Split into train and validation
+X_train, X_val, y_train, y_val = train_test_split(X, Y, test_size=0.3, random_state = 3)
+print(X_train.shape, X_val.shape, y_train.shape, y_val.shape)
+print(X_train)
+r = range(2003, 2017)
+km_year = 10000
+
+
+
+print(y_train)
+
+print(X_val)
+
+print(y_val)
+
+# Multi-Linear Regression
+
+from sklearn.linear_model import LinearRegression
+mr=LinearRegression()
+
+mr.fit(X_train,y_train)
+
+y_predict2=mr.predict(X_val)
+
+from sklearn.metrics import r2_score
+r2_score(y_val,y_predict2)
+
+# Decision Tree Regression
+
+from sklearn.tree import DecisionTreeRegressor  
+  
+# create a regressor object 
+regressor = DecisionTreeRegressor(random_state = 0)  
+  
+# fit the regressor with X and Y data 
+regressor.fit(X_train, y_train) 
+
+y_predict=regressor.predict(X_val)
+
+from sklearn.metrics import r2_score
+r2_score(y_val,y_predict)
+
+# Random Forest Regression
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import GridSearchCV
+
+rf = RandomForestRegressor()
+
+param_grid = { "criterion" : ["mse"]
+              , "min_samples_leaf" : [3]
+              , "min_samples_split" : [3]
+              , "max_depth": [10]
+              , "n_estimators": [500]}
+
+gs = GridSearchCV(estimator=rf, param_grid=param_grid, cv=2, n_jobs=-1, verbose=1)
+gs = gs.fit(X_train, y_train)
+
+
+print(gs.best_score_)
+print(gs.best_params_)
+ 
+
+bp = gs.best_params_
+forest = RandomForestRegressor(criterion=bp['criterion'],
+                              min_samples_leaf=bp['min_samples_leaf'],
+                              min_samples_split=bp['min_samples_split'],
+                              max_depth=bp['max_depth'],
+                              n_estimators=bp['n_estimators'])
+forest.fit(X_train, y_train)
+# Explained variance score: 1 is perfect prediction
+print('Score: %.2f' % forest.score(X_val, y_val))
+
+
+y_predict1=gs.predict(X_val)
+
+from sklearn.metrics import r2_score
+r2_score(y_val,y_predict1)
+
+forest.predict([[110,150000,2001,3,1,18,118,38,2,1,1]])
+
+plt.subplots(figsize=(5, 5))
+g=sns.lineplot(x=df1[df1.kilometer>=10000].yearOfRegistration ,y=df1.powerPS[df1.kilometer>=10000],  alpha=0.5)
+#g.fill_between([1960,1970], 25, 245, facecolor='magenta', alpha = .15, interpolate=True)
+#g.set_xticklabels(g.get_xticklabels(), rotation=90)
+#g.set_xlabel()
+g.grid(axis='both')
+a,b=np.polyfit(df1[df1.price<=0.01e7].yearOfRegistration, df1[df1.price<=0.01e7].powerPS, 1)
+xx=np.array([1950 , 2016])
+y=a*xx+b
+h=sns.lineplot(xx, y, color='red')
+#g.margins(tight=True)
+#h.margins(tight=True)
+
+# GRAPHS
+
+###### plt.clf()
+
+
+s=df1.pivot_table("price","brand", aggfunc="mean").plot(kind='bar', figsize=(17,5),rot=80)
+s.axhline(df1.price.mean(), color="red" ,linestyle="-.",label="MEAN",marker="D")
+s.arrow(20,9000,10,50000, color='magenta',head_width=5, label='mean')
+s.text(28, 62000, "Mean", horizontalalignment='left', 
+       size='large', color='black')
+df1.pivot_table("price","fuelType", aggfunc="mean").plot(kind='bar', figsize=(9,5))
+df1.pivot_table("price","salvaged", aggfunc="mean").plot(kind='bar', figsize=(5,5))
+df1.pivot_table("price","salvaged", aggfunc="count").plot(kind='bar', figsize=(5,5), title="Count", legend=False)
+df1.pivot_table("price","gearbox", aggfunc="mean").plot(kind='bar', figsize=(5,5))
+dfp=df1.pivot_table("price","salvaged", aggfunc="count")
+dfp.rename(columns={"price":"count"}, inplace=True)
+dfp.plot(kind='bar', figsize=(5,5))
+df1.pivot_table("powerPS","fuelType", aggfunc="mean").plot(kind='bar', figsize=(5,5))
+
+
+
+df1.pivot_table("price","gearbox", aggfunc="mean")#.plot(kind='bar', figsize=(5,5))
+
+
+#df=df.drop(df[df.price>9e6].index)
+plt.subplots(figsize=(15, 9))
+g=sns.barplot(x=df1["brand"], y=df1["price"], data=df1,  alpha=0.5)
+g.set_xticklabels(g.get_xticklabels(), rotation=90)
+#g.ax_joint.set_yscale('log')
+#g.ax_joint.set_xscale('log')
+#df=df.drop(df[df.powerPS<30].index)
+
+
+g=sns.distplot(df["kilometer"], bins=70)
+
+g=sns.distplot(df["kilometer"], bins=70)
+#g.invert_xaxis()
+#g.set_xticklabels(g.get_xticklabels(), rotation=60)
+
+g=sns.scatterplot(x="yearOfRegistration", y="price", data=df,  alpha=0.5)
+g.set_autoscalex_on
+g.set_autoscaley_on
+g.axvline(x=2016, color="red")
+g.fill_between([2016,10000], 0, df.price.max(), facecolor='red', alpha = .15, interpolate=True)
+g.text(df.yearOfRegistration.max()/2, df.price.max()/2, "Erroneous Data", horizontalalignment='left', size='medium', color='black', weight='semibold')
+
+
+g=sns.scatterplot(x="powerPS", y="price", data=df,  alpha=0.5)
+g.set_autoscalex_on
+g.set_autoscaley_on
+g.axvline(x=600)
+g.fill_between([600,20000], 0, df.price.max(), facecolor='red', alpha = .15, interpolate=True)
+g.text(df.powerPS.max()/2, df.price.max()/2, "Erroneous Data", horizontalalignment='left', size='medium', color='black', weight='semibold')
+
+#Histograms
+df1.loc[df1.price==df1.price.max()]
+
+plt.hist(df1.price[df1.price<1000], bins=40)
+
+df1.groupby(['fuelType','salvaged']).name.count().plot(kind='bar', logy=True )
+
+df1#=df1.drop('index', axis='columns')\
+
+df1.groupby(['fuelType','gearbox']).name.count().plot(kind='bar', logy=True)
+
+df1.groupby(['fuelType','gearbox']).name.count().plot(kind='bar',figsize=(8,5),logy=True)
+
+df1.powerPS.plot(kind='hist',bins=40)
+
